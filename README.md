@@ -55,7 +55,7 @@ Meta Quest Pro (90Hz)
 ## ✨ 핵심 기능
 
 ### 1. Intelligent Slicing
-단순 시간 단위가 아닌 **시선 각속도(Angular Velocity)** 기반으로 Saccade/Fixation 구간을 감지합니다.
+단순 시간 단위가 아닌 시선 각속도(Angular Velocity) 기반으로 Saccade/Fixation 구간을 감지합니다.
 - Saccade(속도 급증): 시선 이동 중 → 노이즈 구간
 - Fixation(속도 정체): 시선 고정 → 의미 있는 데이터 구간
 - Fixation 시작 시점을 트리거로 데이터 청크 생성 → 데이터 품질 극대화
@@ -70,7 +70,7 @@ Meta Quest Pro (90Hz)
 ### 3. PDF 좌표 매핑
 - PyMuPDF로 PDF 텍스트 좌표 추출
 - Unity 3D Plane의 UV 좌표와 1:1 매핑
-- 학습자가 **어느 텍스트를 보다가 졸았는지** 추적 가능
+- 학습자가 어느 텍스트를 보다가 졸았는지 추적 가능
 
 ### 4. 실시간 상태 분류
 | 상태 | 설명 |
@@ -84,19 +84,19 @@ Meta Quest Pro (90Hz)
 ## 🛠️ 기술 스택
 
 ### Client (VR)
-- **Unity 6** (C#)
-- **Meta XR SDK** (OVREyeGaze, OVRFaceExpressions)
-- **OpenXR** (Meta Quest Pro)
+*Unity 6 (C#)
+- Meta XR SDK (OVREyeGaze, OVRFaceExpressions)
+- OpenXR (Meta Quest Pro)
 
 ### Server
-- **FastAPI** (Python)
-- **PyTorch** (Transformer 분류 모델)
-- **Pydantic** (데이터 검증)
-- **Uvicorn** (ASGI 서버)
+- FastAPI (Python)
+- PyTorch (Transformer 분류 모델)
+- Pydantic (데이터 검증)
+- Uvicorn (ASGI 서버)
 
 ### Data Processing
-- **PyMuPDF** (PDF 좌표 추출)
-- **Newtonsoft.Json** (Unity JSON 직렬화)
+- PyMuPDF (PDF 좌표 추출)
+- Newtonsoft.Json (Unity JSON 직렬화)
 
 ---
 
@@ -163,13 +163,11 @@ Gemini AI 튜터 개입
 
 ---
 
-## 👥 팀 구성
-
 | 역할 | 담당 |
 |------|------|
 | Unity / XR 개발 | @namepenz |
-| FastAPI 백엔드 | 팀원 |
-| AI 모델 학습 | 팀원 |
+| FastAPI 백엔드 | @namepenz |
+| AI 모델 학습 | @namepenz |
 
 ---
 
