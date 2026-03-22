@@ -1,4 +1,4 @@
-# 👁️ Gaze-In — AI 기반 학습자 몰입 상태 분석 시스템
+#  Gaze-In — AI 기반 학습자 몰입 상태 분석 시스템
 
 <p align="center">
   <img src="https://img.shields.io/badge/Unity-6000.3-black?logo=unity" />
