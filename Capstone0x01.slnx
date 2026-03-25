@@ -1,4 +1,6 @@
 ﻿<Solution>
+  <Project Path="Vuplex.WebViewDemos.csproj" />
+  <Project Path="Vuplex.WebView.csproj" />
   <Project Path="Assembly-CSharp.csproj" />
   <Project Path="Assembly-CSharp-Editor.csproj" />
 </Solution>

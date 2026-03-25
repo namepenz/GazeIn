@@ -1,4 +1,4 @@
-# 👁️ Gaze-In — AI 기반 학습자 몰입 상태 분석 시스템
+#  Gaze-In — AI 기반 학습자 몰입 상태 분석 시스템
 
 <p align="center">
   <img src="https://img.shields.io/badge/Unity-6000.3-black?logo=unity" />
@@ -35,15 +35,18 @@ Meta Quest Pro (90Hz)
          │
          ▼
  Unity C# (GazeDataFeeder)
+ ├─ Vuplex CanvasWebViewPrefab (VR 내 웹 브라우저)
+ ├─ 시선 Raycast → 브라우저 픽셀 좌표(px, py) 변환
  ├─ Intelligent Slicing: Angular Velocity 기반 Fixation 감지
- ├─ Fixation 시작 시점에 청크(Chunk) 생성
+ ├─ DOM 스냅샷 수집 (DomSnapshotCollector)
  └─ HTTP POST → FastAPI 서버 (비동기 Coroutine)
          │
          ▼
  FastAPI Backend
- ├─ Pydantic 데이터 파싱
- ├─ Transformer 모델 추론 (focused / drowsy / disengaged)
- └─ 상태 판별 결과 반환
+ ├─ Pydantic 데이터 파싱 (브라우저 좌표 + URL 포함)
+ ├─ S3 원본 데이터 저장
+ ├─ 규칙 기반 자동 라벨링 (DOM 요소 매칭)
+ └─ Transformer 모델 추론 (focused / drowsy / disengaged)
          │
          ▼
  Gemini LLM AI 튜터
@@ -55,7 +58,7 @@ Meta Quest Pro (90Hz)
 ## ✨ 핵심 기능
 
 ### 1. Intelligent Slicing
-단순 시간 단위가 아닌 **시선 각속도(Angular Velocity)** 기반으로 Saccade/Fixation 구간을 감지합니다.
+단순 시간 단위가 아닌 시선 각속도(Angular Velocity) 기반으로 Saccade/Fixation 구간을 감지합니다.
 - Saccade(속도 급증): 시선 이동 중 → 노이즈 구간
 - Fixation(속도 정체): 시선 고정 → 의미 있는 데이터 구간
 - Fixation 시작 시점을 트리거로 데이터 청크 생성 → 데이터 품질 극대화
@@ -64,15 +67,31 @@ Meta Quest Pro (90Hz)
 ```
 시선 방향 (left/right gaze direction)  →┐
 눈 떠짐 정도 (PERCLOS 기반)            →┤→ Transformer 분류 모델
-얼굴 BlendShape 63채널                 →┘
+얼굴 BlendShape 63채널                 →┤
+브라우저 픽셀 좌표 (px, py)             →┘
 ```
 
-### 3. PDF 좌표 매핑
-- PyMuPDF로 PDF 텍스트 좌표 추출
-- Unity 3D Plane의 UV 좌표와 1:1 매핑
-- 학습자가 **어느 텍스트를 보다가 졸았는지** 추적 가능
+### 3. VR 웹 브라우저 기반 학습 환경
+- Vuplex CanvasWebViewPrefab으로 VR 내 웹 브라우저 구현
+- 시선 Raycast → Canvas UV → 브라우저 픽셀 좌표 변환
+- 현재 URL + DOM 요소 좌표 자동 수집
+- 기존 PDF Plane 방식에서 웹 브라우저 방식으로 전환
 
-### 4. 실시간 상태 분류
+### 4. 규칙 기반 자동 라벨링
+DOM 스냅샷과 시선 픽셀 좌표를 매칭하여 자동 라벨 생성:
+
+| 라벨 | 조건 |
+|------|------|
+| `reading_text` | P, SPAN, LI 위 Fixation |
+| `reading_heading` | H1~H6 위 Fixation |
+| `reading_code` | CODE, PRE 위 Fixation |
+| `viewing_image` | IMG 위 Fixation |
+| `viewing_video` | VIDEO 위 Fixation |
+| `scanning` | Saccade 구간 |
+| `deep_focus` | Fixation + Angular Velocity < 5°/s |
+| `background` | DOM 요소 없는 영역 |
+
+### 5. 실시간 상태 분류
 | 상태 | 설명 |
 |------|------|
 | 🟢 Focused | 정상 집중 상태 |
@@ -84,19 +103,22 @@ Meta Quest Pro (90Hz)
 ## 🛠️ 기술 스택
 
 ### Client (VR)
-- **Unity 6** (C#)
-- **Meta XR SDK** (OVREyeGaze, OVRFaceExpressions)
-- **OpenXR** (Meta Quest Pro)
+- Unity 6 (C#)
+- Meta XR SDK (OVREyeGaze, OVRFaceExpressions)
+- Vuplex 3D WebView (CanvasWebViewPrefab)
+- OpenXR (Meta Quest Pro)
 
 ### Server
-- **FastAPI** (Python)
-- **PyTorch** (Transformer 분류 모델)
-- **Pydantic** (데이터 검증)
-- **Uvicorn** (ASGI 서버)
+- FastAPI (Python)
+- PyTorch (Transformer 분류 모델)
+- Pydantic (데이터 검증)
+- Uvicorn (ASGI 서버)
+- AWS S3 (데이터 저장)
 
 ### Data Processing
-- **PyMuPDF** (PDF 좌표 추출)
-- **Newtonsoft.Json** (Unity JSON 직렬화)
+- DOM 스냅샷 기반 자동 라벨링
+- PyMuPDF (PDF 좌표 추출 — 레거시)
+- Newtonsoft.Json (Unity JSON 직렬화)
 
 ---
 
@@ -106,15 +128,18 @@ Meta Quest Pro (90Hz)
 GazeIn/
 ├── Assets/
 │   └── Scripts/
-│       ├── GazeDataFeeder.cs     # 시선 데이터 수집 및 전송
-│       └── PdfCoordMapper.cs     # PDF ↔ Unity 좌표 매핑
+│       ├── GazeDataFeeder.cs        # 시선 데이터 수집 + 브라우저 픽셀 좌표 변환 + 전송
+│       ├── WebPanelController.cs     # Vuplex 초기화, URL 관리, JS 실행
+│       ├── DomSnapshotCollector.cs   # DOM 요소 좌표 주기적 스냅샷
+│       └── PdfCoordMapper.cs        # PDF ↔ Unity 좌표 매핑 (레거시)
 ├── gazein_backend/
-│   ├── main.py                   # FastAPI 엔드포인트
-│   ├── models.py                 # Pydantic 데이터 모델
-│   └── inference.py              # Transformer 추론 모듈
+│   ├── main.py                      # FastAPI 엔드포인트 (S3 업로드)
+│   ├── models.py                    # Pydantic 데이터 모델
+│   ├── auto_labeler.py              # 규칙 기반 자동 라벨링
+│   └── inference.py                 # Transformer 추론 모듈
 └── pytest/
-    ├── pdf_extractor.py          # PDF 텍스트 좌표 추출
-    └── text_coords.json          # 추출된 좌표 데이터
+    ├── pdf_extractor.py             # PDF 텍스트 좌표 추출 (레거시)
+    └── text_coords.json             # 추출된 좌표 데이터 (레거시)
 ```
 
 ---
@@ -128,16 +153,10 @@ pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### PDF 좌표 추출
-```bash
-pip install pymupdf
-python pytest/pdf_extractor.py "학습자료.pdf"
-# → text_coords.json 생성
-```
-
-### Unity 빌드
+### Unity Quest 빌드
 1. Meta Quest Pro USB 연결
-2. `File → Build Settings → Build And Run`
+2. Build Settings → Android → ARM64 / IL2CPP
+3. `File → Build Settings → Build And Run`
 
 ---
 
@@ -146,15 +165,19 @@ python pytest/pdf_extractor.py "학습자료.pdf"
 ```
 90Hz 시선 데이터 수집
     ↓
-Angular Velocity 계산
+시선 Raycast → Vuplex Canvas 히트 → 브라우저 픽셀 좌표(px, py)
     ↓
-Saccade / Fixation 판별
+Angular Velocity 계산 → Saccade / Fixation 판별
     ↓
 Fixation 시작 시 청크 생성 (평균 15~50 샘플)
     ↓
-JSON 직렬화 → HTTP POST
+JSON 직렬화 (URL + 픽셀 좌표 포함) → HTTP POST
     ↓
-FastAPI 수신 → Transformer 추론
+FastAPI 수신 → S3 저장
+    ↓
+DOM 스냅샷 + 시선 좌표 → 규칙 기반 자동 라벨링
+    ↓
+Transformer 모델 학습 / 추론
     ↓
 [focused / drowsy / disengaged] 상태 반환
     ↓
@@ -163,13 +186,11 @@ Gemini AI 튜터 개입
 
 ---
 
-## 👥 팀 구성
-
 | 역할 | 담당 |
 |------|------|
 | Unity / XR 개발 | @namepenz |
-| FastAPI 백엔드 | 팀원 |
-| AI 모델 학습 | 팀원 |
+| FastAPI 백엔드 | @namepenz |
+| AI 모델 학습 | @namepenz |
 
 ---
 
@@ -179,6 +200,55 @@ Gemini AI 튜터 개입
 - [x] Intelligent Slicing (Angular Velocity 기반)
 - [x] FastAPI 비동기 데이터 수신
 - [x] PDF ↔ Unity 좌표 매핑
+- [x] Vuplex 웹 브라우저 기반 시선 추적 전환
+- [x] 브라우저 픽셀 좌표 + URL 수집 구조
+- [x] DOM 스냅샷 수집 시스템
+- [x] 규칙 기반 자동 라벨링 설계
+- [ ] Quest 빌드 실기기 테스트
+- [ ] 자동 라벨링 파이프라인 실행 및 검증
 - [ ] Transformer 모델 학습 (데이터 수집 중)
 - [ ] Gemini LLM 튜터 연동
-- [ ] 음성 트리거 라벨링 시스템
+
+---
+
+## 📅 개발 일지
+
+### 2026-03-25 (화) — Vuplex 웹 브라우저 기반 시선 추적 시스템 전환
+
+#### 목표
+- 기존 StudyMaterial Plane(PDF 기반) → VR 웹 브라우저 기반으로 전환
+- 브라우저 내 시선 좌표(픽셀) 수집 및 DOM 요소 매핑 구조 설계
+
+#### 작업 내용
+
+**1. Unity 씬 구성**
+- Vuplex `CanvasWebViewPrefab`을 World Space Canvas에 배치
+- Canvas 설정: 1920×1080, Scale 0.001, BoxCollider 추가 (시선 Raycast용)
+- OVRCameraRig에 `OVRFaceExpressions` 컴포넌트 추가
+
+**2. 스크립트 작성/수정 (3개)**
+| 스크립트 | 역할 |
+|---------|------|
+| `GazeDataFeeder.cs` | 시선 → 브라우저 픽셀 좌표 변환, Angular Velocity 기반 청크 슬라이싱, FastAPI 전송 |
+| `WebPanelController.cs` | Vuplex 초기화, URL 관리, JS 실행 (DOM 좌표 추출) |
+| `DomSnapshotCollector.cs` | 주기적 DOM 요소 좌표 스냅샷 저장 (자동 라벨링용) |
+
+**3. 데이터 구조 변경**
+- `GazeDataPoint`에 `browser_pixel_x`, `browser_pixel_y`, `hit_canvas` 필드 추가
+- `GazeChunk`에 `url` 필드 추가
+- FastAPI `models.py`, `main.py` 동기화 수정
+
+**4. 자동 라벨링 설계**
+- 수집 흐름: 시선 픽셀 좌표 + DOM 스냅샷 → 규칙 기반 매칭
+- 라벨 종류: `reading_text`, `reading_heading`, `viewing_image`, `scanning`, `deep_focus` 등 11개
+
+#### 이슈 / 메모
+- Unity 에디터에서 Vuplex는 Mock 모드로 동작 (Windows/macOS용 별도 라이선스 필요)
+- 실제 테스트는 Quest 빌드로만 가능
+- 서버 엔드포인트: `http://54.180.244.47:8000/ingest`
+
+#### 다음 할 일
+- [ ] Quest 빌드 후 브라우저 렌더링 + 시선 데이터 수집 테스트
+- [ ] S3 저장 데이터 확인
+- [ ] DOM 스냅샷 기반 자동 라벨링 파이프라인 실행
+- [ ] 라벨링된 CSV 검증

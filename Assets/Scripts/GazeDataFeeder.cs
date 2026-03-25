@@ -6,6 +6,7 @@ using System.Text;
 using UnityEngine;
 using UnityEngine.Networking;
 using Newtonsoft.Json;
+using Vuplex.WebView;
 
 public class GazeDataFeeder : MonoBehaviour
 {
@@ -13,6 +14,12 @@ public class GazeDataFeeder : MonoBehaviour
     public OVREyeGaze leftEyeGaze;
     public OVREyeGaze rightEyeGaze;
     public OVRFaceExpressions faceExpressions;
+
+    [Header("Vuplex References")]                          // ★ 추가
+    public CanvasWebViewPrefab canvasWebView;
+    public RectTransform canvasRect;                        // World Space Canvas의 RectTransform
+    public int browserWidth  = 1920;
+    public int browserHeight = 1080;
 
     [Header("FastAPI Config")]
     public string endpoint = "http://3.34.96.238:8000/ingest";
@@ -25,6 +32,7 @@ public class GazeDataFeeder : MonoBehaviour
     private Vector3 _lastDir;
     private double  _lastTime;
     private bool    _wasSaccade = false;
+    private string  _currentUrl = "";                       // ★ 추가
 
     private void Start()
     {
@@ -35,16 +43,27 @@ public class GazeDataFeeder : MonoBehaviour
         if (faceExpressions == null)
             faceExpressions = FindObjectOfType<OVRFaceExpressions>();
 
+        // ★ Vuplex URL 변경 감지
+        InitWebView();
+
         Debug.Log($"[GazeFeeder] leftEye={leftEyeGaze}, rightEye={rightEyeGaze}, face={faceExpressions}");
+    }
+
+    private async void InitWebView()
+    {
+        if (canvasWebView == null) return;
+        await canvasWebView.WaitUntilInitialized();
+        canvasWebView.WebView.UrlChanged += (_, e) =>
+        {
+            _currentUrl = e.Url;
+            Debug.Log($"[GazeFeeder] URL: {_currentUrl}");
+        };
     }
 
     private void Update()
     {
-        // 큐에서 꺼내서 전송
         if (_sendQueue.TryDequeue(out var chunk))
-        {
             StartCoroutine(PostChunk(chunk));
-        }
 
         if (!OVRPlugin.eyeTrackingEnabled) return;
         if (leftEyeGaze == null || rightEyeGaze == null) return;
@@ -54,6 +73,25 @@ public class GazeDataFeeder : MonoBehaviour
         Vector3 avgDir   = ((leftDir + rightDir) * 0.5f).normalized;
 
         double now = Time.realtimeSinceStartupAsDouble;
+
+        // ★ 시선 → 브라우저 픽셀 좌표 계산
+        Vector3 gazeOrigin = (leftEyeGaze.transform.position + rightEyeGaze.transform.position) * 0.5f;
+        float px = -1f, py = -1f;
+        bool hitCanvas = false;
+
+        if (canvasRect != null && Physics.Raycast(gazeOrigin, avgDir, out RaycastHit hit, 10f))
+        {
+            Vector3 localHit = canvasRect.InverseTransformPoint(hit.point);
+            float nx = (localHit.x / canvasRect.rect.width)  + canvasRect.pivot.x;
+            float ny = (localHit.y / canvasRect.rect.height) + canvasRect.pivot.y;
+
+            if (nx >= 0 && nx <= 1 && ny >= 0 && ny <= 1)
+            {
+                px = nx * browserWidth;
+                py = (1f - ny) * browserHeight;  // 브라우저는 top-left 원점
+                hitCanvas = true;
+            }
+        }
 
         var sample = new GazeDataPoint
         {
@@ -66,7 +104,10 @@ public class GazeDataFeeder : MonoBehaviour
             right_openness       = faceExpressions != null
                 ? 1f - GetSingleFaceWeight(OVRFaceExpressions.FaceExpression.EyesClosedR)
                 : 1f,
-            face_blend_shapes    = GetFaceWeights()
+            face_blend_shapes    = GetFaceWeights(),
+            browser_pixel_x     = px,               // ★ 추가
+            browser_pixel_y     = py,               // ★ 추가
+            hit_canvas          = hitCanvas          // ★ 추가
         };
         _buffer.Add(sample);
 
@@ -79,13 +120,14 @@ public class GazeDataFeeder : MonoBehaviour
 
             if (fixationJustStarted && _buffer.Count >= MIN_SAMPLES)
             {
-                Debug.Log($"[GazeFeeder] 청크 생성 samples={_buffer.Count}");
+                Debug.Log($"[GazeFeeder] 청크 생성 samples={_buffer.Count}, url={_currentUrl}");
                 _sendQueue.Enqueue(new GazeChunk
                 {
                     chunkId     = Guid.NewGuid().ToString("N"),
                     startTime   = _buffer[0].timestamp,
                     endTime     = _buffer[^1].timestamp,
                     triggerType = "fixation_start",
+                    url         = _currentUrl,          // ★ 추가
                     samples     = _buffer.ToArray()
                 });
                 _buffer.Clear();
@@ -145,6 +187,9 @@ public struct GazeDataPoint
     public float   left_openness;
     public float   right_openness;
     public float[] face_blend_shapes;
+    public float   browser_pixel_x;      // ★ 추가
+    public float   browser_pixel_y;      // ★ 추가
+    public bool    hit_canvas;           // ★ 추가
 }
 
 [Serializable]
@@ -154,5 +199,6 @@ public class GazeChunk
     public double          startTime;
     public double          endTime;
     public string          triggerType;
+    public string          url;           // ★ 추가
     public GazeDataPoint[] samples;
 }
