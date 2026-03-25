@@ -197,36 +197,15 @@ Gemini AI 튜터 개입
 - 브라우저 내 시선 좌표(픽셀) 수집 및 DOM 요소 매핑 구조 설계
 
 #### 작업 내용
+에셋 구매 후 유니티 가상환경에서 브라우저 띄우기 성공
+근데 서버 연결은 실패해서 데이터 전송은 안됨
 
-**1. Unity 씬 구성**
-- Vuplex `CanvasWebViewPrefab`을 World Space Canvas에 배치
-- Canvas 설정: 1920×1080, Scale 0.001, BoxCollider 추가 (시선 Raycast용)
-- OVRCameraRig에 `OVRFaceExpressions` 컴포넌트 추가
 
-**2. 스크립트 작성/수정 (3개)**
-| 스크립트 | 역할 |
-|---------|------|
-| `GazeDataFeeder.cs` | 시선 → 브라우저 픽셀 좌표 변환, Angular Velocity 기반 청크 슬라이싱, FastAPI 전송 |
-| `WebPanelController.cs` | Vuplex 초기화, URL 관리, JS 실행 (DOM 좌표 추출) |
-| `DomSnapshotCollector.cs` | 주기적 DOM 요소 좌표 스냅샷 저장 (자동 라벨링용) |
+### 앞으로 해야될 일
+서버로 데이터 전송 확인
+가상환경에 키보드 넣기
+클릭 기능 구현까지 하고 데이터 전송 되는지 확인
 
-**3. 데이터 구조 변경**
-- `GazeDataPoint`에 `browser_pixel_x`, `browser_pixel_y`, `hit_canvas` 필드 추가
-- `GazeChunk`에 `url` 필드 추가
-- FastAPI `models.py`, `main.py` 동기화 수정
+데이터 전송되면 그 데이터 수집 후 분류작업
 
-**4. 자동 라벨링 설계**
-- 수집 흐름: 시선 픽셀 좌표 + DOM 스냅샷 → 규칙 기반 매칭
-- 라벨 종류: `reading_text`, `reading_heading`, `viewing_image`, `scanning`, `deep_focus` 등 11개
-
-#### 이슈 / 메모
-- Unity 에디터에서 Vuplex는 Mock 모드로 동작 (Windows/macOS용 별도 라이선스 필요)
-- 실제 테스트는 Quest 빌드로만 가능
-- 서버 엔드포인트: `http://54.180.244.47:8000/ingest`
-
-#### 다음 할 일
-- [ ] Quest 빌드 후 브라우저 렌더링 + 시선 데이터 수집 테스트
-- [ ] S3 저장 데이터 확인
-- [ ] DOM 스냅샷 기반 자동 라벨링 파이프라인 실행
-- [ ] 라벨링된 CSV 검증
 
