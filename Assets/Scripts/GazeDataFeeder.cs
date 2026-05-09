@@ -29,6 +29,10 @@ public class GazeDataFeeder : MonoBehaviour
     [Header("FastAPI Config")]
     public string endpoint = "http://3.35.207.124:8000/ingest";
 
+    [Header("User Info")]
+    public string userId = "user_123";
+    private string _sessionId;
+
     private const float SACCADE_THRESHOLD = 100f;
     private const int MIN_SAMPLES = 15;
     private const int MAX_BUFFER_SIZE = 100; // 최대 버퍼 크기 상수화
@@ -61,7 +65,8 @@ public class GazeDataFeeder : MonoBehaviour
 
     private void Start()
     {
-        Debug.Log("[GazeFeeder] Start() 호출됨");
+        _sessionId = Guid.NewGuid().ToString("N");
+        Debug.Log($"[GazeFeeder] Start() 호출됨 / SessionID: {_sessionId}");
 
         if (faceExpressions == null)
             faceExpressions = GetComponentInParent<OVRFaceExpressions>();
@@ -222,6 +227,8 @@ public class GazeDataFeeder : MonoBehaviour
                 _sendQueue.Enqueue(new GazeChunk
                 {
                     chunkId = Guid.NewGuid().ToString("N"),
+                    userId = this.userId,
+                    sessionId = this._sessionId,
                     startTime = _buffer[0].timestamp,
                     endTime = _buffer[^1].timestamp,
                     triggerType = triggerName,
@@ -243,6 +250,8 @@ public class GazeDataFeeder : MonoBehaviour
         _sendQueue.Enqueue(new GazeChunk
         {
             chunkId = Guid.NewGuid().ToString("N"),
+            userId = this.userId,
+            sessionId = this._sessionId,
             startTime = _buffer[0].timestamp,
             endTime = _buffer[^1].timestamp,
             triggerType = trigger,
@@ -334,6 +343,8 @@ public struct GazeDataPoint
 public class GazeChunk
 {
     public string chunkId;
+    public string userId;
+    public string sessionId;
     public double startTime;
     public double endTime;
     public string triggerType;

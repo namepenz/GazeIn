@@ -13,6 +13,8 @@ class GazeSample(BaseModel):
 
 class GazeChunk(BaseModel):
     chunkId:     str
+    userId:      str
+    sessionId:   str
     startTime:   float
     endTime:     float
     triggerType: str
