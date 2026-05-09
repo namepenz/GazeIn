@@ -31,9 +31,12 @@ def chunk_to_rows(chunk: GazeChunk) -> list[dict]:
             "right_gaze_z":   s.right_gaze_direction[2],
             "left_openness":  s.left_openness,
             "right_openness": s.right_openness,
+            "browser_pixel_x": s.browser_pixel_x,
+            "browser_pixel_y": s.browser_pixel_y,
+            "hit_canvas":      s.hit_canvas,
         }
         for i, v in enumerate(s.face_blend_shapes):
-            row[f"bs_{i}"] = v
+            row[f"bs_{i:02d}"] = v
         rows.append(row)
     return rows
 
