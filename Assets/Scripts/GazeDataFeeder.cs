@@ -10,6 +10,9 @@ using Vuplex.WebView;
 
 public class GazeDataFeeder : MonoBehaviour
 {
+    private float _forceFlushTimer = 0f;
+    private const float FORCE_FLUSH_INTERVAL = 3.0f;
+
     [Header("Meta SDK References")]
     public OVREyeGaze leftEyeGaze;
     public OVREyeGaze rightEyeGaze;
@@ -18,80 +21,76 @@ public class GazeDataFeeder : MonoBehaviour
     [Header("Vuplex References")]
     public CanvasWebViewPrefab canvasWebView;
     public RectTransform canvasRect;
-    public int browserWidth = 1920;
+    public int browserWidth  = 1920;
     public int browserHeight = 1080;
 
-    [Header("UI Positioning")]
-    public float uiDistance = 2.0f; // 화면 띄울 거리
-    public bool smoothFollow = false; // 시선 따라다니게 할지 여부
-    public float followLerpSpeed = 3f;
-
     [Header("FastAPI Config")]
-    public string endpoint = "http://3.35.207.124:8000/ingest";
+    public string serverBase = "http://43.203.180.90:8000";
+    public string endpoint   = "http://43.203.180.90:8000/ingest";
 
     [Header("User Info")]
-    public string userId = "user_123";
-    private string _sessionId;
+    public string userId    = "user_001";
+    public string sessionId = "";
 
     private const float SACCADE_THRESHOLD = 100f;
-    private const int MIN_SAMPLES = 15;
-    private const int MAX_BUFFER_SIZE = 100; // 최대 버퍼 크기 상수화
+    private const int   MIN_SAMPLES       = 15;
 
     private ConcurrentQueue<GazeChunk> _sendQueue = new();
-    private List<GazeDataPoint> _buffer = new();
+    private List<GazeDataPoint>        _buffer    = new();
     private Vector3 _lastDir;
-    private double _lastTime;
-    private bool _wasSaccade = false;
+    private double  _lastTime;
+    private bool    _wasSaccade  = false;
+    private string  _currentUrl  = "";
+    private float   _yButtonHoldTime = 0f;
+    private float   _xButtonHoldTime = 0f;
+    public bool     isInitialized { get; private set; } = false;
 
-    public void RecenterUI()
-    {
-        Camera cam = Camera.main;
-        if (cam != null)
-        {
-            Vector3 targetPos = cam.transform.position + cam.transform.forward * uiDistance;
-            Quaternion targetRot = Quaternion.LookRotation(targetPos - cam.transform.position);
-            transform.position = targetPos;
-            transform.rotation = targetRot;
-        }
-        else
-        {
-            transform.position = new Vector3(0, 1.5f, uiDistance);
-            transform.rotation = Quaternion.identity;
-        }
-    }
-    private string _currentUrl = "";
+    public bool isCalibrating = false;
+    public bool isCalibrated = false;
+    private List<GazeDataPoint> _calibrationBuffer = new();
+
+    private readonly int[] targetIndices = {
+        0, 1, 2, 3, 4, 5, 12, 13, 14, 15, 18, 19, 20, 21, 24, 25, 38, 39, 51, 54, 55
+    };
 
     public TutorManager tutorManager;
 
+    private void Awake()
+    {
+        // 안드로이드 네이티브 비디오 플레이어로 인한 텍스처 렌더링 멈춤 방지를 위해 데스크탑 User-Agent 적용
+#if UNITY_ANDROID
+        Vuplex.WebView.Web.SetUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36");
+#endif
+    }
+
     private void Start()
     {
-        _sessionId = Guid.NewGuid().ToString("N");
-        Debug.Log($"[GazeFeeder] Start() 호출됨 / SessionID: {_sessionId}");
+        sessionId = "session_" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
 
+        if (canvasWebView == null)
+        {
+            Debug.LogError("[GazeFeeder] canvasWebView 미연결!");
+            return;
+        }
+
+        // FaceExpressions 자동 탐색
         if (faceExpressions == null)
             faceExpressions = GetComponentInParent<OVRFaceExpressions>();
         if (faceExpressions == null)
             faceExpressions = FindFirstObjectByType<OVRFaceExpressions>();
 
-        if (canvasWebView != null)
-            StartCoroutine(InitRoutine());  // ← 이것만 호출
-
-        Debug.Log($"[GazeFeeder] leftEye={leftEyeGaze}, rightEye={rightEyeGaze}, face={faceExpressions}");
-
-        transform.SetParent(null);
-
-        if (canvasWebView != null)
-        {
-            canvasWebView.Native2DModeEnabled = false;
-        }
-
-        transform.position = new Vector3(0, 1.5f, 50f);
-        transform.rotation = Quaternion.identity;
+        StartCoroutine(InitRoutine());
     }
 
     private IEnumerator InitRoutine()
     {
-        // WaitUntilInitialized()는 Task → yield로 대기
+        // 비동기 서버 세션 초기화
+        StartCoroutine(ResetServerSession());
+
+        // VR 트래킹 안정화 대기
+        yield return new WaitForSeconds(1.0f);
+
+        // 웹뷰 초기화 완료 대기
         var task = canvasWebView.WaitUntilInitialized();
         yield return new WaitUntil(() => task.IsCompleted);
 
@@ -103,28 +102,122 @@ public class GazeDataFeeder : MonoBehaviour
 
         canvasWebView.WebView.SetFocused(true);
 
-        if (faceExpressions == null)
-            faceExpressions = GetComponentInParent<OVRFaceExpressions>();
-        if (faceExpressions == null)
-            faceExpressions = FindFirstObjectByType<OVRFaceExpressions>();
+        // 웹뷰 내 전체화면 모드 지원을 위해 브라우저의 전체화면 API를 가상(Mock)으로 구현
+        canvasWebView.WebView.PageLoadScripts.Add(@"
+            if (!window.fakeFsInit) {
+                window.fakeFsInit = true;
 
-        // UrlChanged 먼저 등록 후 LoadUrl
+                // 1. 가상 전체화면 상태 변수
+                window.__fakeFsElement = null;
+
+                // 2. fullscreenElement 속성 오버라이드
+                Object.defineProperty(document, 'fullscreenElement', {
+                    get: function() { return window.__fakeFsElement; }
+                });
+                Object.defineProperty(document, 'fullscreenEnabled', {
+                    get: function() { return true; }
+                });
+
+                // 3. requestFullscreen 메서드 오버라이드
+                Element.prototype.requestFullscreen = function() {
+                    window.__fakeFsElement = this;
+                    this.classList.add('fake-fullscreen');
+                    document.dispatchEvent(new Event('fullscreenchange'));
+                    window.dispatchEvent(new Event('resize'));
+                    return Promise.resolve();
+                };
+
+                // 4. exitFullscreen 메서드 오버라이드
+                document.exitFullscreen = function() {
+                    if (window.__fakeFsElement) {
+                        window.__fakeFsElement.classList.remove('fake-fullscreen');
+                    }
+                    window.__fakeFsElement = null;
+                    document.dispatchEvent(new Event('fullscreenchange'));
+                    window.dispatchEvent(new Event('resize'));
+                    return Promise.resolve();
+                };
+
+                // 5. 전체화면 CSS 주입
+                var style = document.createElement('style');
+                style.innerHTML = `
+                    .fake-fullscreen {
+                        position: fixed !important;
+                        top: 0 !important;
+                        left: 0 !important;
+                        width: 100vw !important;
+                        height: 100vh !important;
+                        z-index: 2147483647 !important; /* 최대 z-index */
+                        background-color: black !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                        transform: none !important;
+                        border-radius: 0 !important;
+                    }
+                    .fake-fullscreen video {
+                        width: 100% !important;
+                        height: 100% !important;
+                        object-fit: contain !important;
+                    }
+                `;
+                document.head.appendChild(style);
+
+                // 6. 유튜브 UI 버튼 클릭 이벤트 연동
+                var eventsToBlock = ['click', 'touchend'];
+                eventsToBlock.forEach(function(evt) {
+                    document.addEventListener(evt, function(e) {
+                        var btn = e.target.closest('.ytp-fullscreen-button');
+                        if (btn) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            e.stopImmediatePropagation();
+                            
+                            var player = document.querySelector('.html5-video-player');
+                            if (player) {
+                                if (document.fullscreenElement) {
+                                    document.exitFullscreen();
+                                } else {
+                                    player.requestFullscreen();
+                                }
+                            }
+                        }
+                    }, true);
+                });
+            }
+        ");
+
         canvasWebView.WebView.UrlChanged += (_, e) =>
         {
             _currentUrl = e.Url;
-            Debug.Log($"[GazeFeeder] URL 변경: {_currentUrl}");
+            Debug.Log($"[GazeFeeder] URL: {_currentUrl}");
         };
-        canvasWebView.WebView.LoadUrl("https://www.youtube.com/");
+
+        isInitialized = true;
+        Debug.Log("[GazeFeeder] 초기화 완료 sessionId=" + sessionId);
     }
 
-    // ── GoBack — async void 유지하되 예외 처리 추가 ──────────────
+    private IEnumerator ResetServerSession()
+    {
+        // 네트워크 라이브러리 충돌 방지를 위해 빈 JSON 데이터 전송
+        byte[] emptyJson = Encoding.UTF8.GetBytes("{}");
+        using var req = new UnityWebRequest(serverBase + "/session/reset", "POST")
+        {
+            uploadHandler   = new UploadHandlerRaw(emptyJson),
+            downloadHandler = new DownloadHandlerBuffer()
+        };
+        req.SetRequestHeader("Content-Type", "application/json");
+        yield return req.SendWebRequest();
+        Debug.Log(req.result == UnityWebRequest.Result.Success
+            ? "[GazeFeeder] 서버 세션 리셋 완료"
+            : $"[GazeFeeder] 서버 리셋 실패: {req.error}");
+    }
+
     public async void GoBack()
     {
         try
         {
             if (canvasWebView?.WebView == null) return;
-            bool canGoBack = await canvasWebView.WebView.CanGoBack();
-            if (canGoBack)
+            if (await canvasWebView.WebView.CanGoBack())
                 canvasWebView.WebView.GoBack();
         }
         catch (Exception e)
@@ -135,128 +228,144 @@ public class GazeDataFeeder : MonoBehaviour
 
     private void Update()
     {
-        // 화면 재정렬 로직 (A 버튼 또는 X 버튼 누르면 눈앞으로 화면 이동)
-        if (OVRInput.GetDown(OVRInput.Button.One))
-        {
-            RecenterUI();
-        }
+        if (!isInitialized) return;
 
-        // 부드럽게 시선 따라가기 로직 (인스펙터에서 켤 수 있음)
-        if (smoothFollow)
+        // Y버튼 3초 유지 시 초기 화면으로 복귀
+        if (OVRInput.Get(OVRInput.Button.Four))
         {
-            Camera cam = Camera.main;
-            if (cam != null)
+            _yButtonHoldTime += Time.deltaTime;
+            if (_yButtonHoldTime >= 3.0f)
             {
-                Vector3 targetPos = cam.transform.position + cam.transform.forward * uiDistance;
-                Quaternion targetRot = Quaternion.LookRotation(targetPos - cam.transform.position);
-                transform.position = Vector3.Lerp(transform.position, targetPos, Time.deltaTime * followLerpSpeed);
-                transform.rotation = Quaternion.Slerp(transform.rotation, targetRot, Time.deltaTime * followLerpSpeed);
+                Debug.Log("[GazeFeeder] Y버튼 3초 이상 홀드됨 -> 초기 사이트로 복귀");
+                if (canvasWebView != null && canvasWebView.WebView != null)
+                {
+                    canvasWebView.WebView.LoadUrl("https://www.youtube.com/");
+                }
+                _yButtonHoldTime = -9999f; // 중복 실행 방지
             }
         }
+        else
+        {
+            if (_yButtonHoldTime < 0f) _yButtonHoldTime = 0f; // 초기화
+            else _yButtonHoldTime = 0f;
+        }
 
-        // 큐에 쌓인 데이터 전송 처리
-        if (_sendQueue.TryDequeue(out var chunk))
+        // X버튼 3초 유지 시 캘리브레이션 재시작
+        if (OVRInput.Get(OVRInput.Button.Three))
+        {
+            _xButtonHoldTime += Time.deltaTime;
+            if (_xButtonHoldTime >= 3.0f)
+            {
+                Debug.Log("[GazeFeeder] X버튼 3초 이상 홀드됨 -> 캘리브레이션 재시작");
+                var calibManager = FindFirstObjectByType<CalibrationManager>();
+                if (calibManager != null)
+                {
+                    calibManager.RestartCalibration();
+                }
+                _xButtonHoldTime = -9999f;
+            }
+        }
+        else
+        {
+            if (_xButtonHoldTime < 0f) _xButtonHoldTime = 0f;
+            else _xButtonHoldTime = 0f;
+        }
+
+        while (_sendQueue.TryDequeue(out var chunk))
             StartCoroutine(PostChunk(chunk));
 
         if (!OVRPlugin.eyeTrackingEnabled) return;
         if (leftEyeGaze == null || rightEyeGaze == null) return;
 
-        // 1. 시선 데이터 계산
-        Vector3 leftDir = leftEyeGaze.transform.TransformDirection(Vector3.forward);
+        Vector3 leftDir  = leftEyeGaze.transform.TransformDirection(Vector3.forward);
         Vector3 rightDir = rightEyeGaze.transform.TransformDirection(Vector3.forward);
-        Vector3 avgDir = ((leftDir + rightDir) * 0.5f).normalized;
-        double now = Time.realtimeSinceStartupAsDouble;
+        Vector3 avgDir   = ((leftDir + rightDir) * 0.5f).normalized;
 
-        // 2. 브라우저 픽셀 좌표 계산 (Canvas Plane Intersection)
+        double  now        = Time.realtimeSinceStartupAsDouble;
         Vector3 gazeOrigin = (leftEyeGaze.transform.position + rightEyeGaze.transform.position) * 0.5f;
+
         float px = -1f, py = -1f;
-        bool hitCanvas = false;
+        bool  hitCanvas = false;
 
-        if (canvasRect != null)
+        // Raycast를 이용해 웹뷰 캔버스와의 교차점 계산
+        if (canvasRect != null && Physics.Raycast(gazeOrigin, avgDir, out RaycastHit hit, 15f))
         {
-            Plane canvasPlane = new Plane(canvasRect.forward, canvasRect.position);
-            Ray gazeRay = new Ray(gazeOrigin, avgDir);
+            Vector3 localHit = canvasRect.InverseTransformPoint(hit.point);
+            float nx = (localHit.x / canvasRect.rect.width)  + canvasRect.pivot.x;
+            float ny = (localHit.y / canvasRect.rect.height) + canvasRect.pivot.y;
 
-            if (canvasPlane.Raycast(gazeRay, out float enter))
+            if (nx >= 0f && nx <= 1f && ny >= 0f && ny <= 1f)
             {
-                Vector3 hitPoint = gazeRay.GetPoint(enter);
-                Vector3 localHit = canvasRect.InverseTransformPoint(hitPoint);
-
-                float nx = (localHit.x / canvasRect.rect.width) + canvasRect.pivot.x;
-                float ny = (localHit.y / canvasRect.rect.height) + canvasRect.pivot.y;
-
-                if (nx >= 0f && nx <= 1f && ny >= 0f && ny <= 1f)
-                {
-                    px = nx * browserWidth;
-                    py = (1f - ny) * browserHeight;
-                    hitCanvas = true;
-                }
+                px        = nx * browserWidth;
+                py        = (1f - ny) * browserHeight;
+                hitCanvas = true;
             }
         }
 
-        // 3. 샘플 생성 및 버퍼 추가
         var sample = new GazeDataPoint
         {
-            timestamp = now,
-            left_gaze_direction = new float[] { leftDir.x, leftDir.y, leftDir.z },
+            timestamp            = now,
+            left_gaze_direction  = new float[] { leftDir.x,  leftDir.y,  leftDir.z  },
             right_gaze_direction = new float[] { rightDir.x, rightDir.y, rightDir.z },
-            left_openness = faceExpressions != null ? 1f - GetSingleFaceWeight(OVRFaceExpressions.FaceExpression.EyesClosedL) : 1f,
-            right_openness = faceExpressions != null ? 1f - GetSingleFaceWeight(OVRFaceExpressions.FaceExpression.EyesClosedR) : 1f,
-            face_blend_shapes = GetMappedBlendShapes(),
-            browser_pixel_x = px,
-            browser_pixel_y = py,
-            hit_canvas = hitCanvas
+            left_openness        = faceExpressions != null
+                ? 1f - GetSingleFaceWeight(OVRFaceExpressions.FaceExpression.EyesClosedL) : 1f,
+            right_openness       = faceExpressions != null
+                ? 1f - GetSingleFaceWeight(OVRFaceExpressions.FaceExpression.EyesClosedR) : 1f,
+            face_blend_shapes    = GetFaceWeights(),
+            browser_pixel_x      = px,
+            browser_pixel_y      = py,
+            hit_canvas           = hitCanvas
         };
-        _buffer.Add(sample);
 
-        // 4. 전송 트리거 판단 (Fixation 시작 또는 버퍼 가득 참)
-        float dt = (float)(now - _lastTime);
-        if (dt > 0 && _lastDir != Vector3.zero)
+        if (isCalibrating)
         {
-            float velocity = Vector3.Angle(_lastDir, avgDir) / dt;
-            bool isSaccade = velocity > SACCADE_THRESHOLD;
-            bool fixationJustStarted = _wasSaccade && !isSaccade;
-            bool bufferFull = _buffer.Count >= MAX_BUFFER_SIZE;
-
-            // 수정된 조건문: 고정이 시작되었거나 버퍼가 100개 이상일 때 (최소 샘플 수 만족 시)
-            if ((fixationJustStarted || bufferFull) && _buffer.Count >= MIN_SAMPLES)
-            {
-                string triggerName = fixationJustStarted ? "fixation_start" : "buffer_full";
-                Debug.Log($"[GazeFeeder] 청크 생성 trigger={triggerName}, samples={_buffer.Count}");
-
-                _sendQueue.Enqueue(new GazeChunk
-                {
-                    chunkId = Guid.NewGuid().ToString("N"),
-                    userId = this.userId,
-                    sessionId = this._sessionId,
-                    startTime = _buffer[0].timestamp,
-                    endTime = _buffer[^1].timestamp,
-                    triggerType = triggerName,
-                    url = _currentUrl,
-                    samples = _buffer.ToArray()
-                });
-                _buffer.Clear();
-            }
-            _wasSaccade = isSaccade;
+            _calibrationBuffer.Add(sample);
+            return;
         }
 
-        _lastDir = avgDir;
+        if (!isCalibrated) return;
+
+        _buffer.Add(sample);
+
+        bool flushed = false;
+        _forceFlushTimer += Time.deltaTime;
+        if (_forceFlushTimer >= FORCE_FLUSH_INTERVAL && _buffer.Count >= MIN_SAMPLES)
+        {
+            FlushBuffer("force_flush");
+            flushed = true;
+        }
+
+        if (!flushed)
+        {
+            float dt = (float)(now - _lastTime);
+            if (dt > 0 && _lastDir != Vector3.zero)
+            {
+                float velocity  = Vector3.Angle(_lastDir, avgDir) / dt;
+                bool  isSaccade = velocity > SACCADE_THRESHOLD;
+                if (_wasSaccade && !isSaccade && _buffer.Count >= MIN_SAMPLES)
+                    FlushBuffer("fixation_start");
+                _wasSaccade = isSaccade;
+            }
+        }
+
+        _lastDir  = avgDir;
         _lastTime = now;
     }
 
     private void FlushBuffer(string trigger)
     {
         if (_buffer.Count == 0) return;
+        _forceFlushTimer = 0f;
         _sendQueue.Enqueue(new GazeChunk
         {
-            chunkId = Guid.NewGuid().ToString("N"),
-            userId = this.userId,
-            sessionId = this._sessionId,
-            startTime = _buffer[0].timestamp,
-            endTime = _buffer[^1].timestamp,
+            chunkId     = Guid.NewGuid().ToString("N"),
+            userId      = this.userId,
+            sessionId   = this.sessionId,
+            startTime   = _buffer[0].timestamp,
+            endTime     = _buffer[^1].timestamp,
             triggerType = trigger,
-            url = _currentUrl,
-            samples = _buffer.ToArray()
+            url         = _currentUrl,
+            samples     = _buffer.ToArray()
         });
         _buffer.Clear();
     }
@@ -268,12 +377,10 @@ public class GazeDataFeeder : MonoBehaviour
 
         using var request = new UnityWebRequest(endpoint, "POST")
         {
-            uploadHandler = new UploadHandlerRaw(body),
+            uploadHandler   = new UploadHandlerRaw(body),
             downloadHandler = new DownloadHandlerBuffer()
         };
         request.SetRequestHeader("Content-Type", "application/json");
-
-        Debug.Log($"[GazeFeeder] 전송 시작: {chunk.chunkId} ({chunk.triggerType})");
         yield return request.SendWebRequest();
 
         if (request.result != UnityWebRequest.Result.Success)
@@ -282,25 +389,19 @@ public class GazeDataFeeder : MonoBehaviour
             yield break;
         }
 
-        Debug.Log($"[GazeFeeder] 전송 성공! 응답: {request.downloadHandler.text}");
-
-        // ★ 튜터 응답 처리
         try
         {
-            var response = JsonConvert.DeserializeObject<IngestResponse>(
-                request.downloadHandler.text);
-
-            if (response?.tutor != null &&
-                !string.IsNullOrEmpty(response.tutor.message) &&
-                tutorManager != null)
+            var resp = JsonConvert.DeserializeObject<IngestResponse>(request.downloadHandler.text);
+            if (resp?.tutor != null && !string.IsNullOrEmpty(resp.tutor.message) && tutorManager != null)
             {
-                Debug.Log($"[GazeFeeder] 졸음 감지 → 튜터 호출: {response.tutor.message}");
-                tutorManager.ShowTutorFromServer(response.tutor.message, response.tutor.audio_url);
+                // 응답에 포함된 트리거 상태값을 기반으로 튜터 애니메이션 실행
+                int trigState = resp.tutor.trigger_state;
+                tutorManager.ShowTutorFromServer(resp.tutor.message, resp.tutor.audio_url, trigState);
             }
         }
         catch (Exception e)
         {
-            Debug.LogWarning($"[GazeFeeder] 응답 파싱 실패: {e.Message}");
+            Debug.LogWarning($"[GazeFeeder] 파싱 오류: {e.Message}");
         }
     }
 
@@ -311,68 +412,122 @@ public class GazeDataFeeder : MonoBehaviour
         return w;
     }
 
-    // 매핑 테이블 인덱스만 골라서 21개 담음
-    private static readonly int[] BS_INDICES = { 0, 1, 2, 3, 4, 5, 12, 13, 14, 15, 18, 19, 20, 21, 24, 25, 38, 39, 51, 54, 55 };
-
-    private float[] GetMappedBlendShapes()
+    private float[] GetFaceWeights()
     {
-        var result = new float[21];
-        if (faceExpressions == null) return result;
-        for (int i = 0; i < BS_INDICES.Length; i++)
+        var w = new float[21];
+        if (faceExpressions == null) return w;
+        for (int i = 0; i < targetIndices.Length; i++)
             faceExpressions.TryGetFaceExpressionWeight(
-                (OVRFaceExpressions.FaceExpression)BS_INDICES[i], out result[i]);
-        return result;
+                (OVRFaceExpressions.FaceExpression)targetIndices[i], out w[i]);
+        return w;
+    }
+
+    public void StartCalibration()
+    {
+        isCalibrating = true;
+        isCalibrated = false;
+        _calibrationBuffer.Clear();
+    }
+
+    public IEnumerator FinishCalibrationRoutine()
+    {
+        isCalibrating = false;
+        
+        if (_calibrationBuffer.Count == 0)
+        {
+            Debug.LogWarning("[GazeFeeder] 캘리브레이션 데이터가 없습니다.");
+            isCalibrated = true;
+            yield break;
+        }
+
+        var chunk = new GazeChunk
+        {
+            chunkId     = Guid.NewGuid().ToString("N"),
+            userId      = this.userId,
+            sessionId   = this.sessionId,
+            startTime   = _calibrationBuffer[0].timestamp,
+            endTime     = _calibrationBuffer[^1].timestamp,
+            triggerType = "calibration",
+            url         = _currentUrl,
+            samples     = _calibrationBuffer.ToArray()
+        };
+
+        string json = JsonConvert.SerializeObject(chunk);
+        byte[] body = Encoding.UTF8.GetBytes(json);
+
+        using var request = new UnityWebRequest(serverBase + "/calibrate", "POST")
+        {
+            uploadHandler   = new UploadHandlerRaw(body),
+            downloadHandler = new DownloadHandlerBuffer()
+        };
+        request.SetRequestHeader("Content-Type", "application/json");
+        yield return request.SendWebRequest();
+
+        if (request.result != UnityWebRequest.Result.Success)
+        {
+            Debug.LogWarning($"[GazeFeeder] 캘리브레이션 전송 실패: {request.error}");
+        }
+        else
+        {
+            Debug.Log($"[GazeFeeder] 캘리브레이션 성공: {request.downloadHandler.text}");
+        }
+
+        _calibrationBuffer.Clear();
+        isCalibrated = true;
     }
 }
 
-[Serializable]
+[System.Serializable]
 public struct GazeDataPoint
 {
-    public double timestamp;
+    public double  timestamp;
     public float[] left_gaze_direction;
     public float[] right_gaze_direction;
-    public float left_openness;
-    public float right_openness;
+    public float   left_openness;
+    public float   right_openness;
     public float[] face_blend_shapes;
-    public float browser_pixel_x;
-    public float browser_pixel_y;
-    public bool hit_canvas;
+    public float   browser_pixel_x;
+    public float   browser_pixel_y;
+    public bool    hit_canvas;
 }
 
-[Serializable]
+[System.Serializable]
 public class GazeChunk
 {
-    public string chunkId;
-    public string userId;
-    public string sessionId;
-    public double startTime;
-    public double endTime;
-    public string triggerType;
-    public string url;
+    public string          chunkId;
+    public string          userId;
+    public string          sessionId;
+    public double          startTime;
+    public double          endTime;
+    public string          triggerType;
+    public string          url;
     public GazeDataPoint[] samples;
 }
 
-// 응답 구조체 추가 (파일 하단)
-[Serializable]
+[System.Serializable]
 public class IngestResponse
 {
-    public string status;
-    public string chunkId;
+    public string        status;
+    public string        chunkId;
     public PerclosResult perclos;
-    public TutorResult tutor;
+    public TutorResult   tutor;
 }
 
-[Serializable]
+[System.Serializable]
 public class PerclosResult
 {
-    public int state;
+    public int   state;
     public float perclos;
-    public bool trigger_tutor;
+    public float mean_openness;
+    public float gaze_out_ratio;
+    public bool  trigger_tutor;
+    public int   trigger_state;
 }
 
-[Serializable]
+[System.Serializable]
 public class TutorResult
 {
     public string message;
     public string audio_url;
+    public int    trigger_state; // 백엔드에서 전송한 트리거 상태값
 }

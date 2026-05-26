@@ -5,9 +5,6 @@ using TMPro;
 
 public class TutorManager : MonoBehaviour
 {
-    [Header("Server Settings")]
-    public string serverUrl = "http://52.79.74.85:8000/tutor/check-state";
-
     [Header("UI & Audio References")]
     public TextMeshProUGUI tutorSpeechText;
     public AudioSource audioSource;
@@ -15,61 +12,60 @@ public class TutorManager : MonoBehaviour
     [Header("UI Panel")]
     public GameObject tutorPanel;  // ← 튜터 UI 패널
 
-    void Update()
+    [Header("Animation Reference")]
+    public Animator avatarAnimator;
+
+    private bool isSpeaking = false;
+
+    // ★ GazeDataFeeder(실시간 ingest 응답)에서 자동 호출하는 핵심 진입점
+    public void ShowTutorFromServer(string message, string audioUrl, int triggerState)
     {
-        // G키: 테스트용 수동 호출
-        if (Input.GetKeyDown(KeyCode.G))
-            StartCoroutine(GetTutorResponse());
+        // 이미 펭귄 튜터가 발화 중이면 중복 실행 방지
+        if (isSpeaking) return;
+
+        StartCoroutine(ShowTutor(message, audioUrl, triggerState));
     }
 
-    // ★ GazeDataFeeder에서 자동 호출하는 함수
-    public void ShowTutorFromServer(string message, string audioUrl)
+    private IEnumerator ShowTutor(string message, string audioUrl, int triggerState)
     {
-        StartCoroutine(ShowTutor(message, audioUrl));
-    }
+        isSpeaking = true;
 
-    private IEnumerator ShowTutor(string message, string audioUrl)
-    {
-        // 텍스트 표시
+        // 1. 텍스트 표시 및 패널 활성화
         if (tutorPanel != null) tutorPanel.SetActive(true);
         if (tutorSpeechText != null) tutorSpeechText.text = message;
 
-        // 음성 재생
-        if (!string.IsNullOrEmpty(audioUrl))
-            yield return StartCoroutine(DownloadAndPlayAudio(audioUrl));
-
-        // 5초 후 숨기기
-        yield return new WaitForSeconds(5f);
-        if (tutorPanel != null) tutorPanel.SetActive(false);
-    }
-
-    // G키 수동 테스트용
-    IEnumerator GetTutorResponse()
-    {
-        if (tutorSpeechText != null)
-            tutorSpeechText.text = "AI 튜터가 생각 중입니다...";
-
-        using (UnityWebRequest webRequest = UnityWebRequest.PostWwwForm(serverUrl, ""))
+        // 2. 룰 기반 애니메이션 트리거 연동 (졸음/주의분산 분기)
+        if (avatarAnimator != null)
         {
-            webRequest.timeout = 60;
-            yield return webRequest.SendWebRequest();
-
-            if (webRequest.result == UnityWebRequest.Result.Success)
+            if (triggerState == 1 || triggerState == 2)
             {
-                string json = webRequest.downloadHandler.text;
-                TutorResponse response = JsonUtility.FromJson<TutorResponse>(json);
-                yield return StartCoroutine(ShowTutor(response.message, response.audio_url));
+                // 졸음 전 단계(1) 또는 졸음(2) 일 때 Jump 발동
+                avatarAnimator.SetTrigger("Jump");
+                Debug.Log($"[TutorAnim] 실시간 State {triggerState} 감지 -> Jump 트리거 가동");
             }
-            else
+            else if (triggerState == 3)
             {
-                if (tutorSpeechText != null)
-                    tutorSpeechText.text = "서버 연결에 실패했습니다.";
-                Debug.LogError("Error: " + webRequest.error);
+                // 주의분산(3) 일 때 Jump2 발동
+                avatarAnimator.SetTrigger("Jump2");
+                Debug.Log($"[TutorAnim] 실시간 State {triggerState} 감지 -> Jump2 트리거 가동");
             }
         }
+
+        // 3. 동적 생성된 TTS 음성 다운로드 및 재생 (오디오 재생 완료 시까지 대기)
+        if (!string.IsNullOrEmpty(audioUrl))
+        {
+            yield return StartCoroutine(DownloadAndPlayAudio(audioUrl));
+        }
+
+        // 4. 피드백 창 유지 후 닫기 (5초)
+        yield return new WaitForSeconds(5f);
+        if (tutorPanel != null) tutorPanel.SetActive(false);
+
+        isSpeaking = false;
     }
 
-    IEnumerator DownloadAndPlayAudio(string url)
+    // Edge-TTS 음성 스트리밍을 위한 오디오 다운로드 코루틴
+    private IEnumerator DownloadAndPlayAudio(string url)
     {
         using (UnityWebRequest www = UnityWebRequestMultimedia.GetAudioClip(url, AudioType.MPEG))
         {
@@ -78,22 +74,17 @@ public class TutorManager : MonoBehaviour
             if (www.result == UnityWebRequest.Result.Success)
             {
                 AudioClip clip = DownloadHandlerAudioClip.GetContent(www);
-                audioSource.clip = clip;
-                audioSource.Play();
-                Debug.Log("음성 재생 시작: " + url);
+                if (audioSource != null)
+                {
+                    audioSource.clip = clip;
+                    audioSource.Play();
+                    Debug.Log("[TutorAudio] 실시간 피드백 음성 재생 시작: " + url);
+                }
             }
             else
             {
-                Debug.LogError("오디오 다운로드 실패: " + www.error);
+                Debug.LogError("[TutorAudio] 오디오 다운로드 실패: " + www.error);
             }
         }
     }
-}
-
-[System.Serializable]
-public class TutorResponse
-{
-    public int state;
-    public string message;
-    public string audio_url;
 }

@@ -275,3 +275,73 @@ Transformer 추론 → [focused / drowsy / disengaged]
 | Unity / XR 개발 | @namepenz |
 | FastAPI 백엔드 | 팀원 |
 | AI 모델 학습 | 팀원 |
+
+---
+
+## 📅 개발 일지
+
+### 2026-03-25 (화) — Vuplex 웹 브라우저 기반 시선 추적 시스템 전환
+
+#### 목표
+- 기존 StudyMaterial Plane(PDF 기반) → VR 웹 브라우저 기반으로 전환
+- 브라우저 내 시선 좌표(픽셀) 수집 및 DOM 요소 매핑 구조 설계
+
+#### 작업 내용
+
+**1. Unity 씬 구성**
+- Vuplex `CanvasWebViewPrefab`을 World Space Canvas에 배치
+- Canvas 설정: 1920×1080, Scale 0.001, BoxCollider 추가 (시선 Raycast용)
+- OVRCameraRig에 `OVRFaceExpressions` 컴포넌트 추가
+
+**2. 스크립트 작성/수정 (3개)**
+| 스크립트 | 역할 |
+|---------|------|
+| `GazeDataFeeder.cs` | 시선 → 브라우저 픽셀 좌표 변환, Angular Velocity 기반 청크 슬라이싱, FastAPI 전송 |
+| `WebPanelController.cs` | Vuplex 초기화, URL 관리, JS 실행 (DOM 좌표 추출) |
+| `DomSnapshotCollector.cs` | 주기적 DOM 요소 좌표 스냅샷 저장 (자동 라벨링용) |
+
+**3. 데이터 구조 변경**
+- `GazeDataPoint`에 `browser_pixel_x`, `browser_pixel_y`, `hit_canvas` 필드 추가
+- `GazeChunk`에 `url` 필드 추가
+- FastAPI `models.py`, `main.py` 동기화 수정
+
+**4. 자동 라벨링 설계**
+- 수집 흐름: 시선 픽셀 좌표 + DOM 스냅샷 → 규칙 기반 매칭
+- 라벨 종류: `reading_text`, `reading_heading`, `viewing_image`, `scanning`, `deep_focus` 등 11개
+
+#### 이슈 / 메모
+- Unity 에디터에서 Vuplex는 Mock 모드로 동작 (Windows/macOS용 별도 라이선스 필요)
+- 실제 테스트는 Quest 빌드로만 가능
+- 서버 엔드포인트: `http://54.180.244.47:8000/ingest`
+
+#### 다음 할 일
+- [ ] Quest 빌드 후 브라우저 렌더링 + 시선 데이터 수집 테스트
+- [ ] S3 저장 데이터 확인
+- [ ] DOM 스냅샷 기반 자동 라벨링 파이프라인 실행
+- [ ] 라벨링된 CSV 검증
+
+---
+
+### 2026-05-26 (화) — 시스템 고도화 및 캘리브레이션/튜터 기능 추가
+
+#### 목표
+- 눈 깜빡임(PERCLOS) 측정 기반 캘리브레이션 시스템 구축
+- AI 튜터 매니저 및 상호작용 기능 설계
+- VR 컨트롤러 레이저 포인터 연동 및 데이터 구조 개선
+
+#### 작업 내용
+
+**1. Unity 스크립트 추가/수정**
+- `CalibrationManager.cs`: 안내 UI 제공 및 10초간 눈 깜빡임 측정, 서버로 맞춤형 기준값 전송 흐름 구현
+- `TutorManager.cs`: AI 튜터 시스템 기본 구조 구축
+- `ControllerLaserPointer.cs`: VR 환경 내 상호작용 강화를 위한 레이저 포인터 추가
+- `GazeDataFeeder.cs`, `DomSnapshotCollector.cs`: 데이터 수집 최적화 및 픽셀 좌표 수집 로직 개선
+- 레거시 코드 정리: `PdfCoordMapper.cs`, `PdfCoordMapper1.cs` 등 기존 PDF 기반 클래스 삭제
+
+**2. FastAPI 백엔드 연동 변경**
+- `models.py`: `GazeSample` 모델에 `browser_pixel_x`, `browser_pixel_y`, `hit_canvas` 필드 추가
+- `main.py`: 수집된 `browser_pixel` 및 캔버스 히트 정보를 저장 포맷에 반영되도록 수정
+
+#### 다음 할 일
+- [ ] Quest 빌드 후 전체 파이프라인 실기기 테스트 진행
+- [ ] AI 튜터 피드백 및 상호작용 시나리오 고도화

@@ -98,17 +98,8 @@ InitTestScene*.unity*
 # Auto-generated scenes by play mode tests
 /[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*
 
-# Plastic SCM internals
-.plastic/
+# Ignore huge generated backup folders
+*_BackUpThisFolder_ButDontShipItWithYourGame/
+Android/
+Capstone0x01_BurstDebugInformation_DoNotShip/
 
-# Plastic private lock files
-*.private.*
-
-# Burst debug (large generated folder, no source value)
-*_BurstDebugInformation_DoNotShip/
-
-# Personal documents / non-project files
-*.pdf
-*.zip
-*.docx
-report.docx

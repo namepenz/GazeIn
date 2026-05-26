@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "925275129366",
+    "project_id": "my-ar-project-1-55c12",
+    "storage_bucket": "my-ar-project-1-55c12.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:925275129366:android:a774a604c6ef6032ca5737",
+        "android_client_info": {
+          "package_name": "kr.ac.hallym.myarproject"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDI1yHNIFMZL9i2Vy1f-Y3BAI_nS6lqydU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
